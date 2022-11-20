@@ -8,7 +8,7 @@ import (
 	"os"
 	"time"
 
-	"github.com/dmacvicar/terraform-provider-libvirt/libvirt"
+	"github.com/cuteip/terraform-provider-libvirt/libvirt"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/plugin"
 )
 

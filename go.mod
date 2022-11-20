@@ -1,4 +1,4 @@
-module github.com/dmacvicar/terraform-provider-libvirt
+module github.com/cuteip/terraform-provider-libvirt
 
 require (
 	github.com/community-terraform-providers/terraform-provider-ignition/v2 v2.1.2

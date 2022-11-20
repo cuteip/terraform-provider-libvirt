@@ -5,7 +5,7 @@ import (
 	"net"
 	"strconv"
 
-	"github.com/dmacvicar/terraform-provider-libvirt/libvirt/helper/hashcode"
+	"github.com/cuteip/terraform-provider-libvirt/libvirt/helper/hashcode"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
 )
 

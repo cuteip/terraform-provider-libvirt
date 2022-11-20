@@ -11,7 +11,7 @@ import (
 
 	"github.com/davecgh/go-spew/spew"
 	libvirt "github.com/digitalocean/go-libvirt"
-	"github.com/dmacvicar/terraform-provider-libvirt/libvirt/helper/suppress"
+	"github.com/cuteip/terraform-provider-libvirt/libvirt/helper/suppress"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
 	"libvirt.org/go/libvirtxml"
 )
