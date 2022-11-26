@@ -232,6 +232,55 @@ func resourceLibvirtDomain() *schema.Resource {
 								Type: schema.TypeString,
 							},
 						},
+						"virtualport": {
+							Type:     schema.TypeString,
+							Optional: true,
+							ValidateFunc: func(i interface{}, s string) (warns []string, errs []error) {
+								virtualPort := i.(string)
+								if virtualPort != "openvswitch" {
+									errs = append(errs, fmt.Errorf("%s support only 'openvswitch", s))
+								}
+								return
+							},
+						},
+						"vlan": {
+							Type:     schema.TypeList,
+							MaxItems: 1,
+							Optional: true,
+							Elem: &schema.Resource{
+								Schema: map[string]*schema.Schema{
+									"untagged_vlan_id": {
+										Type:     schema.TypeInt,
+										Optional: true,
+										ValidateFunc: func(i interface{}, s string) (warns []string, errs []error) {
+											vlanID := i.(int)
+											err := validateVlanID(vlanID)
+											if err != nil {
+												errs = append(errs, err)
+												return
+											}
+											return
+										},
+									},
+									"tagged_vlan_ids": {
+										Type:     schema.TypeList,
+										Optional: true,
+										Elem: &schema.Schema{
+											Type: schema.TypeInt,
+											ValidateFunc: func(i interface{}, s string) (warns []string, errs []error) {
+												vlanID := i.(int)
+												err := validateVlanID(vlanID)
+												if err != nil {
+													errs = append(errs, err)
+													return
+												}
+												return
+											},
+										},
+									},
+								},
+							},
+						},
 					},
 				},
 			},
@@ -1011,6 +1060,7 @@ func resourceLibvirtDomainRead(d *schema.ResourceData, meta interface{}) error {
 			"mac":            mac,
 			"hostname":       "",
 			"wait_for_lease": false,
+			"virtualport":    "",
 		}
 
 		netIface["wait_for_lease"] = d.Get(prefix + ".wait_for_lease").(bool)
@@ -1053,6 +1103,39 @@ func resourceLibvirtDomainRead(d *schema.ResourceData, meta interface{}) error {
 			}
 		} else if networkInterfaceDef.Source.Bridge != nil {
 			netIface["bridge"] = networkInterfaceDef.Source.Bridge.Bridge
+
+			// virtualport には openvswitch 以外が入らないこととする（独自の制約）
+			if networkInterfaceDef.VirtualPort.Params.OpenVSwitch != nil {
+				netIface["virtualport"] = "openvswitch"
+			}
+
+			if networkInterfaceDef.VLan != nil {
+				vlan := map[string]interface{}{}
+				untaggedVlanID := 0
+				taggedVlanIDs := []int{}
+				for _, tag := range networkInterfaceDef.VLan.Tags {
+					// ＜XML で <vlan> が 1 つ書かれている場合＞
+					// その VLAN は、Untag にされて VM に渡される（VM にとっては VLAN ID がついていないパケットが届く）
+					// このような XML では、<vlan><tag id='2'/></vlan> のように "nativeMode='untagged'" がない
+					// https://github.com/cuteip/terraform-provider-libvirt/issues/1#issuecomment-1321146519
+
+					// ＜XML で <vlan> が 2 つ以上書かれている場合＞
+					// <vlan><tag id='2'/></vlan> は Tagged のまま VM に渡される（VM にとっては VLAN ID がついているパケットが届く）
+					// <vlan><tag id='3' nativeMode='untagged'/></vlan> は、Untag されて VM に渡される（VM にとっては VLAN ID がついていないパケットが届く）
+					// https://github.com/cuteip/terraform-provider-libvirt/issues/1#issuecomment-1321151141
+
+					// nativeMode='untagged' の判定があやしいので <vlan></vlan> の数も確認して判定する
+					if tag.NativeMode == "untagged" || len(networkInterfaceDef.VLan.Tags) == 1 {
+						untaggedVlanID = int(tag.ID)
+					} else {
+						taggedVlanIDs = append(taggedVlanIDs, int(tag.ID))
+					}
+				}
+
+				vlan["untagged_vlan_id"] = untaggedVlanID
+				vlan["tagged_vlan_ids"] = taggedVlanIDs
+				netIface["vlan"] = []map[string]interface{}{vlan}
+			}
 		} else if networkInterfaceDef.Source.Direct != nil {
 			switch networkInterfaceDef.Source.Direct.Mode {
 			case "vepa":

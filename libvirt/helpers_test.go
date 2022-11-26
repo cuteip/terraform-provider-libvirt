@@ -5,15 +5,16 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"os/exec"
 	"reflect"
 	"strings"
 	"testing"
 
-	libvirt "github.com/digitalocean/go-libvirt"
 	"github.com/community-terraform-providers/terraform-provider-ignition/v2/ignition"
-	"github.com/hashicorp/terraform-plugin-sdk/v2/terraform"
+	libvirt "github.com/digitalocean/go-libvirt"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/resource"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/terraform"
 	"libvirt.org/go/libvirtxml"
 )
 
@@ -376,5 +377,23 @@ func testAccCheckDnsmasqOptions(name string, expected []libvirtxml.NetworkDnsmas
 			}
 		}
 		return nil
+	}
+}
+
+func createOpenVSwitch(t *testing.T, bridgeName string) (error, func()) {
+	cmd := exec.Command("sudo", "ovs-vsctl", "--may-exist", "add-br", bridgeName)
+	_, err := cmd.Output()
+	fmt.Printf("Executing command: %s\n", strings.Join(cmd.Args, " "))
+	if err != nil {
+		t.Fatalf("Error creating Open vSwitch bridge: %s", err)
+	}
+
+	return nil, func() {
+		cmd := exec.Command("sudo", "ovs-vsctl", "--if-exists", "del-br", bridgeName)
+		_, err := cmd.Output()
+		fmt.Printf("Executing command: %s\n", strings.Join(cmd.Args, " "))
+		if err != nil {
+			t.Fatalf("Error deleting Open vSwitch bridge: %s", err)
+		}
 	}
 }

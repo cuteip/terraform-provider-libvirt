@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	libvirt "github.com/digitalocean/go-libvirt"
+	"github.com/google/go-cmp/cmp"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/acctest"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/resource"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/terraform"
@@ -643,6 +644,340 @@ func TestAccLibvirtDomain_NetworkInterface(t *testing.T) {
 						"libvirt_domain."+randomDomainName, "network_interface.1.mac", "52:54:00:A9:F5:19"),
 					resource.TestCheckResourceAttr(
 						"libvirt_domain."+randomDomainName, "network_interface.1.hostname", "myhost"),
+				),
+			},
+		},
+	})
+}
+
+func TestAccLibvirtDomain_NetworkInterfaceVlan_OnlyUntaggedVlan(t *testing.T) {
+	skipIfPrivilegedDisabled(t)
+
+	var domain libvirt.Domain
+	randomDomainName := acctest.RandStringFromCharSet(10, acctest.CharSetAlpha)
+	const bridgeName = "ovs_br1"
+
+	err, deleteOpenVSwitchBridge := createOpenVSwitch(t, bridgeName)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer deleteOpenVSwitchBridge()
+
+	currentDir, err := os.Getwd()
+	if err != nil {
+		t.Fatal("Unexpected error:", err)
+	}
+
+	var config1 = fmt.Sprintf(`
+	resource "libvirt_domain" "%s" {
+		name              = "%s"
+		network_interface {
+			bridge = "%s"
+			virtualport = "openvswitch"
+			vlan {
+				untagged_vlan_id = 10
+			}
+		}
+		disk {
+			file = "%s/testdata/tcl.iso"
+		}
+	}`, randomDomainName, randomDomainName, bridgeName, currentDir)
+
+	wantVlanXML1 := libvirtxml.DomainInterfaceVLan{
+		Trunk: "",
+		Tags: []libvirtxml.DomainInterfaceVLanTag{
+			{ID: 10, NativeMode: "untagged"},
+		},
+	}
+
+	var config2 = fmt.Sprintf(`
+	resource "libvirt_domain" "%s" {
+		name              = "%s"
+		vcpu = 4
+		network_interface {
+			bridge = "%s"
+			virtualport = "openvswitch"
+			vlan {
+				untagged_vlan_id = 20
+			}
+		}
+		disk {
+			file = "%s/testdata/tcl.iso"
+		}
+	}`, randomDomainName, randomDomainName, bridgeName, currentDir)
+
+	wantVlanXML2 := libvirtxml.DomainInterfaceVLan{
+		Trunk: "",
+		Tags: []libvirtxml.DomainInterfaceVLanTag{
+			{ID: 20, NativeMode: "untagged"},
+		},
+	}
+
+	resource.Test(t, resource.TestCase{
+		PreCheck:     func() { testAccPreCheck(t) },
+		Providers:    testAccProviders,
+		CheckDestroy: testAccCheckLibvirtDomainDestroy,
+		Steps: []resource.TestStep{
+			{
+				Config:             config1,
+				ExpectNonEmptyPlan: false,
+				Check: resource.ComposeTestCheckFunc(
+					testAccCheckLibvirtDomainExists("libvirt_domain."+randomDomainName, &domain),
+					resource.TestCheckResourceAttr(
+						"libvirt_domain."+randomDomainName, "network_interface.0.bridge", bridgeName),
+
+					// virtualport に openvswitch が設定されているかの確認の仕方がわからなかったので、とりあえず見ないことにしちゃう
+					// resource.TestCheckResourceAttr(
+					// 	"libvirt_domain."+randomDomainName, "network_interface.0.virtualport", "openvswitch"),
+
+					// ネストされたものを 0 -> 0 と参照したりすることはできないらしいので無視！
+					// https://github.com/hashicorp/terraform/issues/21618
+					// resource.TestCheckResourceAttr(
+					// 	"libvirt_domain."+randomDomainName, "network_interface.0.vlan.0.untagged_vlan_id", strconv.Itoa(untaggedVlanID)),
+
+					testAccCheckDomainInterfaceVlanXML(&domain, &wantVlanXML1),
+				),
+			},
+			{
+				// .tf を書き換えたとき Update のテスト
+				Config:             config2,
+				ExpectNonEmptyPlan: false,
+				Check: resource.ComposeTestCheckFunc(
+					testAccCheckLibvirtDomainExists("libvirt_domain."+randomDomainName, &domain),
+					resource.TestCheckResourceAttr(
+						"libvirt_domain."+randomDomainName, "network_interface.0.bridge", bridgeName),
+					testAccCheckDomainInterfaceVlanXML(&domain, &wantVlanXML2),
+				),
+			},
+		},
+	})
+}
+
+func TestAccLibvirtDomain_NetworkInterfaceVlan_UntaggedAndTaggedSingle(t *testing.T) {
+	skipIfPrivilegedDisabled(t)
+
+	var domain libvirt.Domain
+	randomDomainName := acctest.RandStringFromCharSet(10, acctest.CharSetAlpha)
+	const bridgeName = "ovs_br1"
+
+	err, deleteOpenVSwitchBridge := createOpenVSwitch(t, bridgeName)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer deleteOpenVSwitchBridge()
+
+	currentDir, err := os.Getwd()
+	if err != nil {
+		t.Fatal("Unexpected error:", err)
+	}
+
+	var config = fmt.Sprintf(`
+	resource "libvirt_domain" "%s" {
+		name              = "%s"
+		network_interface {
+			bridge = "%s"
+			virtualport = "openvswitch"
+			vlan {
+				untagged_vlan_id = 10
+				tagged_vlan_ids = [20]
+			}
+		}
+		disk {
+			file = "%s/testdata/tcl.iso"
+		}
+	}`, randomDomainName, randomDomainName, bridgeName, currentDir)
+
+	wantVlanXML := libvirtxml.DomainInterfaceVLan{
+		Trunk: "yes",
+		Tags: []libvirtxml.DomainInterfaceVLanTag{
+			{ID: 10, NativeMode: "untagged"},
+			{ID: 20},
+		},
+	}
+
+	resource.Test(t, resource.TestCase{
+		PreCheck:     func() { testAccPreCheck(t) },
+		Providers:    testAccProviders,
+		CheckDestroy: testAccCheckLibvirtDomainDestroy,
+		Steps: []resource.TestStep{
+			{
+				Config:             config,
+				ExpectNonEmptyPlan: false,
+				Check: resource.ComposeTestCheckFunc(
+					testAccCheckLibvirtDomainExists("libvirt_domain."+randomDomainName, &domain),
+					resource.TestCheckResourceAttr(
+						"libvirt_domain."+randomDomainName, "network_interface.0.bridge", bridgeName),
+					testAccCheckDomainInterfaceVlanXML(&domain, &wantVlanXML),
+				),
+			},
+		},
+	})
+}
+
+func TestAccLibvirtDomain_NetworkInterfaceVlan_UntaggedAndTaggedMultiple(t *testing.T) {
+	skipIfPrivilegedDisabled(t)
+
+	var domain libvirt.Domain
+	randomDomainName := acctest.RandStringFromCharSet(10, acctest.CharSetAlpha)
+	const bridgeName = "ovs_br1"
+
+	err, deleteOpenVSwitchBridge := createOpenVSwitch(t, bridgeName)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer deleteOpenVSwitchBridge()
+
+	currentDir, err := os.Getwd()
+	if err != nil {
+		t.Fatal("Unexpected error:", err)
+	}
+
+	var config = fmt.Sprintf(`
+	resource "libvirt_domain" "%s" {
+		name              = "%s"
+		network_interface {
+			bridge = "%s"
+			virtualport = "openvswitch"
+			vlan {
+				untagged_vlan_id = 10
+				tagged_vlan_ids = [20, 30]
+			}
+		}
+		disk {
+			file = "%s/testdata/tcl.iso"
+		}
+	}`, randomDomainName, randomDomainName, bridgeName, currentDir)
+
+	wantVlanXML := libvirtxml.DomainInterfaceVLan{
+		Trunk: "yes",
+		Tags: []libvirtxml.DomainInterfaceVLanTag{
+			{ID: 10, NativeMode: "untagged"},
+			{ID: 20},
+			{ID: 30},
+		},
+	}
+
+	resource.Test(t, resource.TestCase{
+		PreCheck:     func() { testAccPreCheck(t) },
+		Providers:    testAccProviders,
+		CheckDestroy: testAccCheckLibvirtDomainDestroy,
+		Steps: []resource.TestStep{
+			{
+				Config:             config,
+				ExpectNonEmptyPlan: false,
+				Check: resource.ComposeTestCheckFunc(
+					testAccCheckLibvirtDomainExists("libvirt_domain."+randomDomainName, &domain),
+					resource.TestCheckResourceAttr(
+						"libvirt_domain."+randomDomainName, "network_interface.0.bridge", bridgeName),
+					testAccCheckDomainInterfaceVlanXML(&domain, &wantVlanXML),
+				),
+			},
+		},
+	})
+}
+
+func TestAccLibvirtDomain_NetworkInterfaceVlan_OnlyTagged(t *testing.T) {
+	skipIfPrivilegedDisabled(t)
+
+	var domain libvirt.Domain
+	randomDomainName := acctest.RandStringFromCharSet(10, acctest.CharSetAlpha)
+	const bridgeName = "ovs_br1"
+
+	err, deleteOpenVSwitchBridge := createOpenVSwitch(t, bridgeName)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer deleteOpenVSwitchBridge()
+
+	currentDir, err := os.Getwd()
+	if err != nil {
+		t.Fatal("Unexpected error:", err)
+	}
+
+	var config = fmt.Sprintf(`
+	resource "libvirt_domain" "%s" {
+		name              = "%s"
+		network_interface {
+			bridge = "%s"
+			virtualport = "openvswitch"
+			vlan {
+				tagged_vlan_ids = [20, 30]
+			}
+		}
+		disk {
+			file = "%s/testdata/tcl.iso"
+		}
+	}`, randomDomainName, randomDomainName, bridgeName, currentDir)
+
+	wantVlanXML := libvirtxml.DomainInterfaceVLan{
+		Trunk: "yes",
+		Tags: []libvirtxml.DomainInterfaceVLanTag{
+			{ID: 20},
+			{ID: 30},
+		},
+	}
+
+	resource.Test(t, resource.TestCase{
+		PreCheck:     func() { testAccPreCheck(t) },
+		Providers:    testAccProviders,
+		CheckDestroy: testAccCheckLibvirtDomainDestroy,
+		Steps: []resource.TestStep{
+			{
+				Config:             config,
+				ExpectNonEmptyPlan: false,
+				Check: resource.ComposeTestCheckFunc(
+					testAccCheckLibvirtDomainExists("libvirt_domain."+randomDomainName, &domain),
+					resource.TestCheckResourceAttr(
+						"libvirt_domain."+randomDomainName, "network_interface.0.bridge", bridgeName),
+					testAccCheckDomainInterfaceVlanXML(&domain, &wantVlanXML),
+				),
+			},
+		},
+	})
+}
+
+func TestAccLibvirtDomain_NetworkInterfaceVlan_NoVlanField(t *testing.T) {
+	skipIfPrivilegedDisabled(t)
+
+	var domain libvirt.Domain
+	randomDomainName := acctest.RandStringFromCharSet(10, acctest.CharSetAlpha)
+	const bridgeName = "ovs_br1"
+
+	err, deleteOpenVSwitchBridge := createOpenVSwitch(t, bridgeName)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer deleteOpenVSwitchBridge()
+
+	currentDir, err := os.Getwd()
+	if err != nil {
+		t.Fatal("Unexpected error:", err)
+	}
+
+	var config = fmt.Sprintf(`
+	resource "libvirt_domain" "%s" {
+		name              = "%s"
+		network_interface {
+			bridge = "%s"
+			virtualport = "openvswitch"
+		}
+		disk {
+			file = "%s/testdata/tcl.iso"
+		}
+	}`, randomDomainName, randomDomainName, bridgeName, currentDir)
+
+	resource.Test(t, resource.TestCase{
+		PreCheck:     func() { testAccPreCheck(t) },
+		Providers:    testAccProviders,
+		CheckDestroy: testAccCheckLibvirtDomainDestroy,
+		Steps: []resource.TestStep{
+			{
+				Config:             config,
+				ExpectNonEmptyPlan: false,
+				Check: resource.ComposeTestCheckFunc(
+					testAccCheckLibvirtDomainExists("libvirt_domain."+randomDomainName, &domain),
+					resource.TestCheckResourceAttr(
+						"libvirt_domain."+randomDomainName, "network_interface.0.bridge", bridgeName),
 				),
 			},
 		},
@@ -1931,3 +2266,26 @@ func TestAccLibvirtDomain_FwCfgName(t *testing.T) {
 		},
 	})
 }
+
+// 作成済み Domain が持つ Interface と、引数 wantVlanXML が一致するか確認する
+func testAccCheckDomainInterfaceVlanXML(domain *libvirt.Domain, wantVlanXML *libvirtxml.DomainInterfaceVLan) resource.TestCheckFunc {
+	return func(s *terraform.State) error {
+		virConn := testAccProvider.Meta().(*Client).libvirt
+		domainDef, err := getXMLDomainDefFromLibvirt(virConn, *domain)
+		if err != nil {
+			return fmt.Errorf("Error retrieving libvirt domain XML description from existing domain: %s", err)
+		}
+
+		if len(domainDef.Devices.Interfaces) != 1 {
+			return fmt.Errorf("target domain must have one interface")
+		}
+
+		if diff := cmp.Diff(wantVlanXML, domainDef.Devices.Interfaces[0].VLan); diff != "" {
+			return fmt.Errorf("domain interface mismatch (-want +got):\n%s", diff)
+		}
+
+		return nil
+	}
+}
+
+// func

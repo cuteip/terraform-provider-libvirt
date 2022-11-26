@@ -82,3 +82,11 @@ func networkRange(network *net.IPNet) (firstIP net.IP, lastIP net.IP) {
 
 	return netIP.Mask(network.Mask), getLastIP(network, netIP)
 }
+
+func validateVlanID(vlanID int) error {
+	if 1 <= vlanID && vlanID <= 4096 {
+		return nil
+	}
+
+	return fmt.Errorf("out of range vlan id: %d", vlanID)
+}

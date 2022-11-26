@@ -723,6 +723,51 @@ func setNetworkInterfaces(d *schema.ResourceData, domainDef *libvirtxml.Domain,
 					Bridge: bridgeNameI.(string),
 				},
 			}
+
+			if virtualPortI, ok := d.GetOk(prefix + ".virtualport"); ok {
+				if virtualPortI.(string) == "openvswitch" {
+					netIface.VirtualPort = &libvirtxml.DomainInterfaceVirtualPort{
+						Params: &libvirtxml.DomainInterfaceVirtualPortParams{
+							// TODO: これで有効になるか？
+							OpenVSwitch: &libvirtxml.DomainInterfaceVirtualPortParamsOpenVSwitch{},
+						},
+					}
+				}
+				// Validation が効いているはず？なので 'openvswitch' 以外はこないはず
+			}
+
+			vlanPrefix := prefix + ".vlan.0"
+			if _, ok := d.GetOk(vlanPrefix); ok {
+				var untaggedVlanID int
+				if untaggedVlanIDI, ok := d.GetOk(vlanPrefix + ".untagged_vlan_id"); ok {
+					untaggedVlanID = untaggedVlanIDI.(int)
+				}
+
+				var taggedVlanIDs []int
+				if taggedVlanIDsI, ok := d.GetOk(vlanPrefix + ".tagged_vlan_ids"); ok {
+					for _, taggedVlanIDI := range taggedVlanIDsI.([]interface{}) {
+						taggedVlanIDs = append(taggedVlanIDs, taggedVlanIDI.(int))
+					}
+				}
+
+				netIface.VLan = &libvirtxml.DomainInterfaceVLan{}
+
+				if untaggedVlanID > 0 {
+					netIface.VLan.Tags = append(netIface.VLan.Tags,
+						libvirtxml.DomainInterfaceVLanTag{ID: uint(untaggedVlanID), NativeMode: "untagged"},
+					)
+				}
+
+				for _, taggedVlanID := range taggedVlanIDs {
+					netIface.VLan.Tags = append(netIface.VLan.Tags,
+						libvirtxml.DomainInterfaceVLanTag{ID: uint(taggedVlanID)},
+					)
+				}
+
+				if len(taggedVlanIDs) > 0 {
+					netIface.VLan.Trunk = "yes"
+				}
+			}
 		} else if devI, ok := d.GetOk(prefix + ".vepa"); ok {
 			netIface.Source = &libvirtxml.DomainInterfaceSource{
 				Direct: &libvirtxml.DomainInterfaceSourceDirect{
